@@ -10,7 +10,7 @@ type Config struct {
 func LoadConfig() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
-	viper.AddConfigPath("./load-balancer")
+	viper.AddConfigPath(".")
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
 	}

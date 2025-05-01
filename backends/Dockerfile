@@ -1,4 +1,7 @@
-FROM ubuntu:latest
-LABEL authors="yellowkek"
+FROM golang:1.24-alpine
 
-ENTRYPOINT ["top", "-b"]
+WORKDIR /app
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+EXPOSE 8080
+CMD ["./main"]
