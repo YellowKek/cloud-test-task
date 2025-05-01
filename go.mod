@@ -1,1 +1,0 @@
-module cloud-test-task
