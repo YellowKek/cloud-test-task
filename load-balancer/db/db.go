@@ -23,7 +23,7 @@ func NewDB(uri string) (*sql.DB, error) {
 		CREATE TABLE IF NOT EXISTS client_configs (
 			client_id TEXT PRIMARY KEY,
 			capacity INTEGER NOT NULL,
-			refill_interval INTEGER NOT NULL
+			refill_interval BIGINT NOT NULL
 		)
 	`)
 	if err != nil {

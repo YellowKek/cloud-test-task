@@ -47,6 +47,7 @@ func (tb *TokenBucket) Allow() bool {
 }
 
 type TokenBucketConfig struct {
+	ClientId       string
 	Capacity       int
 	RefillInterval time.Duration
 }
@@ -63,22 +64,44 @@ func NewRateLimiter(db *sql.DB) *RateLimiter {
 		buckets: make(map[string]*TokenBucket),
 		db:      db,
 	}
-
 	// Загружаем настройки клиентов из БД при старте, если нет данных в бд то загружаем из дефолтного конфига
-	//if err := rl.loadClientConfig(); err != nil {
-	//	err := rl.loadDefaultConfig()
-	//	log.Print("loading default config")
-	//	if err != nil {
-	//		log.Fatal("load bucket config failed", err)
-	//		return nil
-	//	}
-	//}
 	err := rl.loadDefaultConfig()
+	log.Print("loading default config")
 	if err != nil {
+		log.Fatal("load bucket config failed", err)
 		return nil
 	}
-	//log.Printf("clientId: %s, capacity: %d, refill int: %d", rl.config.ClientID, rl.config.Capacity, rl.config.RefillInterval)
+	if err := rl.loadClientConfig(); err != nil {
+		log.Print("[ERROR] load bucket config from db failed", err)
+	}
+
 	return rl
+}
+
+func (rl *RateLimiter) AddBucket(bucket TokenBucketConfig) error {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if _, ok := rl.buckets[bucket.ClientId]; ok {
+		rl.buckets[bucket.ClientId] = NewTokenBucket(bucket.Capacity, bucket.RefillInterval)
+	} else {
+		return fmt.Errorf("backend %s does not exists", bucket.ClientId)
+	}
+	log.Print("[DEBUG] add bucket", bucket.Capacity, bucket.RefillInterval)
+	return nil
+}
+
+func (rl *RateLimiter) DeleteBucket(bucket string) error {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if _, ok := rl.buckets[bucket]; ok {
+		delete(rl.buckets, bucket)
+	} else {
+		return fmt.Errorf("backend %s does not exists", bucket)
+	}
+	for _, bucket := range rl.buckets {
+		log.Print("[DEBUG] delete bucket", *bucket)
+	}
+	return nil
 }
 
 func (rl *RateLimiter) loadDefaultConfig() error {
@@ -104,41 +127,37 @@ func (rl *RateLimiter) loadDefaultConfig() error {
 			RefillInterval: cfg.RefillInterval}
 	}
 	rl.config = cfgMap
-	for k, v := range cfgMap {
-		log.Printf("cfg map for %s: cap: %d refill int: %d", k, v.Capacity, v.RefillInterval)
-	}
 	return nil
 }
 
-//func (rl *RateLimiter) loadClientConfig() error {
-//	rows, err := rl.db.Query("SELECT client_id, capacity, refill_interval FROM client_configs")
-//	if err != nil {
-//		log.Printf("Failed to load client configs: %v", err)
-//		return err
-//	}
-//	defer rows.Close()
-//
-//	loaded := false
-//	for rows.Next() {
-//		loaded = true
-//		var cfg TokenBucketConfig
-//		var interval int
-//		err := rows.Scan(&cfg.ClientID, &cfg.Capacity, &interval)
-//		if err != nil {
-//			log.Printf("Failed to scan client config: %v", err)
-//			continue
-//		}
-//		cfg.RefillInterval = time.Duration(interval) * time.Second
-//
-//		rl.config = cfg
-//		rl.buckets[cfg.ClientID] = NewTokenBucket(cfg.Capacity, cfg.RefillInterval)
-//	}
-//
-//	if !loaded {
-//		return fmt.Errorf("no client configurations found in database")
-//	}
-//	return nil
-//}
+func (rl *RateLimiter) loadClientConfig() error {
+	rows, err := rl.db.Query("SELECT client_id, capacity, refill_interval FROM client_configs")
+	if err != nil {
+		log.Printf("Failed to load client configs: %v", err)
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cfg TokenBucketConfig
+		var interval int
+		err := rows.Scan(&cfg.ClientId, &cfg.Capacity, &interval)
+		if err != nil {
+			log.Printf("Failed to scan client config: %v", err)
+			continue
+		}
+		cfg.RefillInterval = time.Duration(interval) * time.Second
+
+		rl.config[cfg.ClientId] = &cfg
+		rl.buckets[cfg.ClientId] = NewTokenBucket(cfg.Capacity, cfg.RefillInterval)
+	}
+	err = rows.Err()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
 
 func (rl *RateLimiter) Allow(clientID string) bool {
 	rl.mu.RLock()

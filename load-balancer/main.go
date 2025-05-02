@@ -3,7 +3,10 @@ package main
 import (
 	"cloud-test-task/config"
 	"cloud-test-task/db"
+	handler2 "cloud-test-task/handler"
 	"cloud-test-task/rateLimiter"
+	"cloud-test-task/repository"
+	service2 "cloud-test-task/service"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -30,22 +34,21 @@ func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 			req.URL.Host = backend.Url.Host
 
 			clientId := req.URL.Host
-			log.Print("clientId: ", clientId)
 			if !lb.rateLimiter.Allow(clientId) {
-				req.URL.Host = "rate-limited"
+				req.URL.Host = "rate-limited|" + clientId
 				return
 			}
 			log.Printf("Forwarding request to %v", backend.Url)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if r.URL.Host == "rate-limited" {
-				w.WriteHeader(http.StatusTooManyRequests)
-				w.Write([]byte("Rate limit exceeded"))
-				return
-			}
 			if r.URL.Host == "" {
 				w.WriteHeader(http.StatusBadGateway)
 				w.Write([]byte("Backends are not available"))
+			} else if len(r.URL.Host) > 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte("Rate limit exceeded"))
+				log.Printf("[INFO] bucket is empty for client %s", strings.Split(r.URL.Host, "|")[1])
+				return
 			} else {
 				w.WriteHeader(r.Response.StatusCode)
 				_, err := io.Copy(w, r.Response.Body)
@@ -88,11 +91,33 @@ func main() {
 
 	go lb.HealthCheck()
 
+	mux := http.NewServeMux()
+
 	proxy := NewReverseProxy(lb)
+
+	mux.Handle("/", proxy)
+	repo := repository.NewConfigRepository(db)
+	service := service2.NewConfigService(repo)
+	handler := handler2.NewConfigHandler(service, rl)
+	mux.HandleFunc("/rate-limits", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handler.GetAll(w, r)
+		case http.MethodPost:
+			handler.Create(w, r)
+		case http.MethodPut:
+			handler.Update(w, r)
+		case http.MethodDelete:
+			handler.Delete(w, r)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	mux.Handle("/rate-limits/", http.StripPrefix("/rate-limits/", http.HandlerFunc(handler.GetById)))
 
 	server := &http.Server{
 		Addr:    fmt.Sprintf(":%s", config.Port),
-		Handler: proxy,
+		Handler: mux,
 	}
 
 	log.Printf("Load balancer started on :%s", config.Port)
