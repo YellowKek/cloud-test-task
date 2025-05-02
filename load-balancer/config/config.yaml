@@ -5,4 +5,4 @@ backends:
 db: postgres://postgres:postgres@postgres:5432/config
 rate_limiting:
   capacity: 10
-  refill_interval: "1m"
+  refill_interval: "5s"

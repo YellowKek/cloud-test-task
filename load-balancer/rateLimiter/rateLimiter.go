@@ -13,7 +13,6 @@ import (
 type TokenBucket struct {
 	capacity       int
 	tokens         int
-	lastRefill     time.Time
 	refillInterval time.Duration
 	mu             sync.Mutex
 }
@@ -22,25 +21,23 @@ func NewTokenBucket(capacity int, refillInterval time.Duration) *TokenBucket {
 	return &TokenBucket{
 		capacity:       capacity,
 		tokens:         capacity,
-		lastRefill:     time.Now(),
 		refillInterval: refillInterval,
+	}
+}
+
+func (tb *TokenBucket) Refill() {
+	ticker := time.NewTicker(tb.refillInterval)
+	for {
+		tb.mu.Lock()
+		tb.tokens = tb.capacity
+		tb.mu.Unlock()
+		<-ticker.C
 	}
 }
 
 func (tb *TokenBucket) Allow() bool {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
-
-	elapsed := time.Now().Sub(tb.lastRefill)
-
-	if elapsed >= tb.refillInterval {
-		refillCount := int(elapsed/tb.refillInterval) * tb.capacity
-		tb.tokens += refillCount
-		if tb.tokens > tb.capacity {
-			tb.tokens = tb.capacity
-		}
-		tb.lastRefill = time.Now()
-	}
 
 	if tb.tokens > 0 {
 		tb.tokens--
@@ -49,16 +46,13 @@ func (tb *TokenBucket) Allow() bool {
 	return false
 }
 
-//func tb.
-
 type TokenBucketConfig struct {
 	Capacity       int
 	RefillInterval time.Duration
 }
 
 type RateLimiter struct {
-	config map[string]*TokenBucketConfig
-	//config  TokenBucketConfig
+	config  map[string]*TokenBucketConfig
 	buckets map[string]*TokenBucket
 	mu      sync.RWMutex
 	db      *sql.DB
@@ -159,6 +153,7 @@ func (rl *RateLimiter) Allow(clientID string) bool {
 		rl.mu.Lock()
 		bucket = NewTokenBucket(cfg.Capacity, cfg.RefillInterval)
 		rl.buckets[clientID] = bucket
+		go bucket.Refill()
 		rl.mu.Unlock()
 	}
 
