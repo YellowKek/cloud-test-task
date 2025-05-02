@@ -1,5 +1,0 @@
-port: "8080"
-backends:
-  - "http://back1:8080"
-  - "http://back2:8080"
-#  - "http://localhost:8083"

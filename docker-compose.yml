@@ -1,11 +1,30 @@
 services:
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    environment:
+      POSTGRES_DB: "config"
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "postgres"
+      PGDATA: "/var/lib/postgresql/data/pgdata"
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    volumes:
+      - /home/pgdata:/var/lib/postgresql/data/pgdata
+    networks:
+      - cloud-net
   back1:
     image: backend-cloud
     build:
       context: ./backends
     container_name: back1
-#    ports:
-#      - "8081:8080"
     networks:
       - cloud-net
 
@@ -14,8 +33,6 @@ services:
     build:
       context: ./backends
     container_name: back2
-#    ports:
-#      - "8082:8080"
     networks:
       - cloud-net
 
@@ -24,10 +41,17 @@ services:
     build:
       context: ./load-balancer
     container_name: load-balancer
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
     networks:
       - cloud-net
+
+volumes:
+  pgdata:
+    driver: local
 
 networks:
   cloud-net:

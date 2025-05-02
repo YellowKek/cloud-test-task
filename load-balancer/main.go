@@ -1,6 +1,9 @@
 package main
 
 import (
+	"cloud-test-task/config"
+	"cloud-test-task/db"
+	"cloud-test-task/rateLimiter"
 	"context"
 	"errors"
 	"fmt"
@@ -11,50 +14,18 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 )
 
-type Backend struct {
-	Url   url.URL
-	Alive bool
-}
-
-// LoadBalancer TODO сделать два массива живые и мертвые
-type LoadBalancer struct {
-	backends []*Backend
-	index    uint32
-	mu       sync.Mutex
-}
-
-func (lb *LoadBalancer) NextBackend() *Backend {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-	for i := 0; i < len(lb.backends); i++ {
-		backend := lb.backends[lb.index%uint32(len(lb.backends))]
-		lb.index++
-		if backend.Alive {
-			return backend
-		}
-
-	}
-	return nil
-}
-
-func isBackendAlive(url url.URL) bool {
-	resp, err := http.Get(url.String() + "/health")
-	if err != nil {
-		log.Printf("Backend %v is down: %v", url, err)
-		return false
-	}
-	defer resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
 func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
+			clientIP := req.RemoteAddr
+			if !lb.rateLimiter.Allow(clientIP) {
+				req.URL.Host = "rate-limited"
+				return
+			}
 			backend := lb.NextBackend()
 			if backend == nil {
 				req.URL.Host = ""
@@ -65,6 +36,11 @@ func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 			log.Printf("Forwarding request to %v", backend.Url)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if r.URL.Host == "rate-limited" {
+				w.WriteHeader(http.StatusTooManyRequests)
+				w.Write([]byte("Rate limit exceeded"))
+				return
+			}
 			if r.URL.Host == "" {
 				w.WriteHeader(http.StatusBadGateway)
 				w.Write([]byte("Backends are not available"))
@@ -80,30 +56,15 @@ func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 	}
 }
 
-func (lb *LoadBalancer) HealthCheck() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		lb.mu.Lock()
-		for _, backend := range lb.backends {
-			if isBackendAlive(backend.Url) {
-				backend.Alive = true
-				log.Printf("Available backend: %v", backend)
-			} else {
-				backend.Alive = false
-				log.Printf("Backend %v is down", backend)
-			}
-		}
-		lb.mu.Unlock()
-		<-ticker.C
-	}
-}
-
 func main() {
-	config, err := LoadConfig()
+	config, err := config.LoadConfig()
 	if err != nil {
 		log.Fatal("Failed to load config:", err)
+	}
+
+	db, err := db.NewDB(config.Db)
+	if err != nil {
+		log.Fatal("failed to connect to db: ", err)
 	}
 
 	backends := make([]*Backend, 0)
@@ -115,9 +76,12 @@ func main() {
 		backends = append(backends, &Backend{Url: *temp, Alive: false})
 	}
 
+	rl := rateLimiter.NewRateLimiter(db)
+
 	lb := &LoadBalancer{
-		backends: backends,
-		index:    0,
+		backends:    backends,
+		index:       0,
+		rateLimiter: rl,
 	}
 
 	go lb.HealthCheck()

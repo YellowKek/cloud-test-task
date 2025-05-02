@@ -1,0 +1,8 @@
+port: "8080"
+backends:
+  - "http://back1:8080"
+  - "http://back2:8080"
+db: postgres://postgres:postgres@postgres:5432/config
+rate_limiting:
+  capacity: 10
+  refill_interval: "1m"

@@ -1,21 +1,23 @@
-package main
+package config
 
 import "github.com/spf13/viper"
 
 type Config struct {
 	Port     string
 	Backends []string
+	Db       string
 }
 
 func LoadConfig() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
+	viper.AddConfigPath("./config")
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err
 	}
 	return &Config{
 		Port:     viper.GetString("port"),
 		Backends: viper.GetStringSlice("backends"),
+		Db:       viper.GetString("db"),
 	}, nil
 }
