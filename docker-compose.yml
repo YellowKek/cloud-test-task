@@ -39,8 +39,8 @@ services:
   load-balancer:
     image: load-balancer
     build:
-      context: ./load-balancer
-    container_name: load-balancer
+      context: balancer
+    container_name: balancer
     depends_on:
       postgres:
         condition: service_healthy

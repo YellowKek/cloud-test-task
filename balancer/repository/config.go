@@ -6,6 +6,7 @@ import (
 	"log"
 )
 
+// ConfigRepository интерфейс для операций с бд
 type ConfigRepository interface {
 	Create(cfg rateLimiter.TokenBucketConfig) error
 	GetByClientId(clientId string) (rateLimiter.TokenBucketConfig, error)
@@ -14,6 +15,7 @@ type ConfigRepository interface {
 	GetAll() ([]rateLimiter.TokenBucketConfig, error)
 }
 
+// ConfigRepositoryImpl реализация интерфейса
 type ConfigRepositoryImpl struct {
 	db *sql.DB
 }

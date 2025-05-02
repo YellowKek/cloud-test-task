@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// ConfigHandler хэндлер для crud операций
 type ConfigHandler struct {
 	s  service.ConfigService
 	rl *rateLimiter.RateLimiter
@@ -20,6 +21,7 @@ func NewConfigHandler(s service.ConfigService, rl *rateLimiter.RateLimiter) *Con
 	return &ConfigHandler{s: s, rl: rl}
 }
 
+// Create создание бакета по переданному конфигу
 func (h *ConfigHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var dto dto.ConfigDto
 	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
@@ -32,7 +34,7 @@ func (h *ConfigHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Print("[ERROR] fail to parse duration: ", err)
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("fail to parse duration"))
+		w.Write([]byte("fail to parse duration: " + err.Error()))
 		return
 	}
 
@@ -45,7 +47,10 @@ func (h *ConfigHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err = h.rl.AddBucket(bucket)
+	err = h.rl.AddBucket(bucket)
 	if err != nil {
+		// Откатываем создание в БД если не удалось добавить в память
+		_ = h.s.Delete(bucket.ClientId)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))
 		return
@@ -55,16 +60,12 @@ func (h *ConfigHandler) Create(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf("%+v", bucket)))
 }
 
+// GetAll получение всех конфигов бакетов
 func (h *ConfigHandler) GetAll(w http.ResponseWriter, r *http.Request) {
-	res, err := h.s.GetAll()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
-		return
-	}
+	res := h.rl.GetAllBucketConfigs()
 	w.Header().Add("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	err = json.NewEncoder(w).Encode(res)
+	err := json.NewEncoder(w).Encode(res)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
@@ -72,15 +73,16 @@ func (h *ConfigHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetById получение бакета по clientId
 func (h *ConfigHandler) GetById(w http.ResponseWriter, r *http.Request) {
 	clientId := r.URL.Path
 	if clientId == "" {
 		http.Error(w, "ID is required", http.StatusBadRequest)
 		return
 	}
-	res, err := h.s.GetByClientId(clientId)
+	res, err := h.rl.GetBucketConfig(clientId)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))
 		return
 	}
@@ -94,6 +96,7 @@ func (h *ConfigHandler) GetById(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Update обновление конфигурации бакета по clientId
 func (h *ConfigHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var dto dto.ConfigDto
 	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
@@ -135,22 +138,25 @@ func (h *ConfigHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Delete удаление конфигурации и бакета по clientId
 func (h *ConfigHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	var clientId string
-	if err := json.NewDecoder(r.Body).Decode(&clientId); err != nil {
+	var req struct {
+		ClientId string `json:"client_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("Invalid request body"))
 		return
 	}
 
-	err := h.rl.DeleteBucket(clientId)
+	err := h.rl.DeleteBucket(req.ClientId)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))
 		return
 	}
 
-	err = h.s.Delete(clientId)
+	err = h.s.Delete(req.ClientId)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))

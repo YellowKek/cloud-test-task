@@ -4,6 +4,7 @@ import (
 	"cloud-test-task/config"
 	"cloud-test-task/db"
 	handler2 "cloud-test-task/handler"
+	"cloud-test-task/load-balancer"
 	"cloud-test-task/rateLimiter"
 	"cloud-test-task/repository"
 	service2 "cloud-test-task/service"
@@ -17,27 +18,26 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
 
-func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
+// NewReverseProxy основная функция проксирования запросов
+// если в бакете для текущего клиента есть токены, то запросы передаются в него, если нет, то передаются на следующий сервер
+func NewReverseProxy(lb *loadbalancer.LoadBalancer) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			backend := lb.NextBackend()
+			backend, tokensEmpty := lb.NextBackend()
 			if backend == nil {
+				if tokensEmpty {
+					req.URL.Host = "rate-limited"
+					return
+				}
 				req.URL.Host = ""
 				return
 			}
 			req.URL.Scheme = backend.Url.Scheme
 			req.URL.Host = backend.Url.Host
-
-			clientId := req.URL.Host
-			if !lb.rateLimiter.Allow(clientId) {
-				req.URL.Host = "rate-limited|" + clientId
-				return
-			}
 			log.Printf("Forwarding request to %v", backend.Url)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -47,7 +47,7 @@ func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 			} else if len(r.URL.Host) > 1 {
 				w.WriteHeader(http.StatusTooManyRequests)
 				w.Write([]byte("Rate limit exceeded"))
-				log.Printf("[INFO] bucket is empty for client %s", strings.Split(r.URL.Host, "|")[1])
+				log.Printf("[INFO] all bucketы are empty")
 				return
 			} else {
 				w.WriteHeader(r.Response.StatusCode)
@@ -56,7 +56,6 @@ func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 					w.WriteHeader(http.StatusInternalServerError)
 				}
 			}
-			log.Printf("Error: %v", err)
 		},
 	}
 }
@@ -72,24 +71,25 @@ func main() {
 		log.Fatal("failed to connect to db: ", err)
 	}
 
-	backends := make([]*Backend, 0)
+	// заполнение массива данными из конфига, но в правильном формате
+	backends := make([]*loadbalancer.Backend, 0)
 	for _, backendURL := range config.Backends {
 		temp, err := url.Parse(backendURL)
 		if err != nil {
 			log.Fatalf("Failed to parse backend URL from config: %v", err)
 		}
-		backends = append(backends, &Backend{Url: *temp, Alive: false})
+		backends = append(backends, &loadbalancer.Backend{Url: *temp, Alive: false})
 	}
 
 	rl := rateLimiter.NewRateLimiter(db)
 
-	lb := &LoadBalancer{
-		backends:    backends,
-		index:       0,
-		rateLimiter: rl,
+	lb := &loadbalancer.LoadBalancer{
+		Backends:    backends,
+		Index:       0,
+		RateLimiter: rl,
 	}
 
-	go lb.HealthCheck()
+	go lb.HealthCheck() // запуск функции для проверка доступности бэкендов
 
 	mux := http.NewServeMux()
 
@@ -99,6 +99,7 @@ func main() {
 	repo := repository.NewConfigRepository(db)
 	service := service2.NewConfigService(repo)
 	handler := handler2.NewConfigHandler(service, rl)
+	// crud эндпоинты
 	mux.HandleFunc("/rate-limits", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -122,9 +123,9 @@ func main() {
 
 	log.Printf("Load balancer started on :%s", config.Port)
 
+	// graceful shutdown
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, os.Kill)
 	go func() {
 		<-stop
 		log.Println("Shutting down server...")
@@ -133,6 +134,7 @@ func main() {
 		if err := server.Shutdown(ctx); err != nil {
 			log.Fatal("Server shutdown error:", err)
 		}
+
 	}()
 
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

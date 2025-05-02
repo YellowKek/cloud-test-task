@@ -24,7 +24,6 @@ func main() {
 	}
 
 	log.Println("Starting server")
-	// TODO graceful shutdown
 	if err := server.ListenAndServe(); err != nil {
 		fmt.Println("Error starting the server:", err)
 	}

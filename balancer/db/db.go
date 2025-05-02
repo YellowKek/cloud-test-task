@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/stdlib"
 )
 
+// NewDB подключение к бд и создание таблицы
 func NewDB(uri string) (*sql.DB, error) {
 	connCfg, err := pgx.ParseURI(uri)
 	if err != nil {

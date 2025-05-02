@@ -8,6 +8,7 @@ type Config struct {
 	Db       string
 }
 
+// LoadConfig функция для загрузки конфига из файла config.yaml
 func LoadConfig() (*Config, error) {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")

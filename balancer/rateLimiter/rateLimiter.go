@@ -25,6 +25,7 @@ func NewTokenBucket(capacity int, refillInterval time.Duration) *TokenBucket {
 	}
 }
 
+// Refill каждые промежутки времени, указанные в конфиге обновляет количество токенов в бакете
 func (tb *TokenBucket) Refill() {
 	ticker := time.NewTicker(tb.refillInterval)
 	for {
@@ -35,6 +36,9 @@ func (tb *TokenBucket) Refill() {
 	}
 }
 
+// Allow проверяет количество токенов в бакете
+// если токенов хватает, то уменьшает их кол-во на 1 и возвращает true
+// если не хватает то возвращает false
 func (tb *TokenBucket) Allow() bool {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
@@ -47,9 +51,9 @@ func (tb *TokenBucket) Allow() bool {
 }
 
 type TokenBucketConfig struct {
-	ClientId       string
-	Capacity       int
-	RefillInterval time.Duration
+	ClientId       string        `json:"client_id"`
+	Capacity       int           `json:"capacity"`
+	RefillInterval time.Duration `json:"refill_interval"`
 }
 
 type RateLimiter struct {
@@ -64,7 +68,7 @@ func NewRateLimiter(db *sql.DB) *RateLimiter {
 		buckets: make(map[string]*TokenBucket),
 		db:      db,
 	}
-	// Загружаем настройки клиентов из БД при старте, если нет данных в бд то загружаем из дефолтного конфига
+	// Загружаем настройки клиентов из стандартного конфига, потом если есть пользовательские настройки, одновляем их
 	err := rl.loadDefaultConfig()
 	log.Print("loading default config")
 	if err != nil {
@@ -78,32 +82,64 @@ func NewRateLimiter(db *sql.DB) *RateLimiter {
 	return rl
 }
 
+// AddBucket добавляет бакет в map
 func (rl *RateLimiter) AddBucket(bucket TokenBucketConfig) error {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	if _, ok := rl.buckets[bucket.ClientId]; ok {
-		rl.buckets[bucket.ClientId] = NewTokenBucket(bucket.Capacity, bucket.RefillInterval)
-	} else {
-		return fmt.Errorf("backend %s does not exists", bucket.ClientId)
-	}
-	log.Print("[DEBUG] add bucket", bucket.Capacity, bucket.RefillInterval)
+
+	// Создаем/обновляем бакет независимо от его существования
+	rl.buckets[bucket.ClientId] = NewTokenBucket(bucket.Capacity, bucket.RefillInterval)
+	rl.config[bucket.ClientId] = &bucket
+
+	log.Printf("[DEBUG] added/updated bucket %s: %+v", bucket.ClientId, bucket)
 	return nil
 }
 
+// DeleteBucket удаляет бакет из map
 func (rl *RateLimiter) DeleteBucket(bucket string) error {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	if _, ok := rl.buckets[bucket]; ok {
-		delete(rl.buckets, bucket)
-	} else {
+
+	_, bucketExists := rl.buckets[bucket]
+	_, configExists := rl.config[bucket]
+
+	if !bucketExists && !configExists {
 		return fmt.Errorf("backend %s does not exists", bucket)
 	}
-	for _, bucket := range rl.buckets {
-		log.Print("[DEBUG] delete bucket", *bucket)
+
+	if bucketExists {
+		delete(rl.buckets, bucket)
 	}
+	if configExists {
+		delete(rl.config, bucket)
+	}
+
 	return nil
 }
 
+// GetBucketConfig возвращает конфиг переданного бакета
+func (rl *RateLimiter) GetBucketConfig(bucket string) (*TokenBucketConfig, error) {
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	bucketConfig, ok := rl.config[bucket]
+	if !ok {
+		return nil, fmt.Errorf("backend %s does not exists", bucket)
+	}
+	return bucketConfig, nil
+}
+
+// GetAllBucketConfigs возвращает конфиги всех бакетов
+func (rl *RateLimiter) GetAllBucketConfigs() []TokenBucketConfig {
+	res := make([]TokenBucketConfig, 0)
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	for _, cfg := range rl.config {
+		res = append(res, *cfg)
+	}
+	return res
+}
+
+// loadDefaultConfig загружает стандартный конфиг из файла
 func (rl *RateLimiter) loadDefaultConfig() error {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -124,12 +160,15 @@ func (rl *RateLimiter) loadDefaultConfig() error {
 		}
 		cfgMap[clientURL.Host] = &TokenBucketConfig{
 			Capacity:       cfg.Capacity,
-			RefillInterval: cfg.RefillInterval}
+			RefillInterval: cfg.RefillInterval,
+			ClientId:       clientURL.Host,
+		}
 	}
 	rl.config = cfgMap
 	return nil
 }
 
+// loadClientConfig загружает конфиг из бд
 func (rl *RateLimiter) loadClientConfig() error {
 	rows, err := rl.db.Query("SELECT client_id, capacity, refill_interval FROM client_configs")
 	if err != nil {
@@ -159,6 +198,7 @@ func (rl *RateLimiter) loadClientConfig() error {
 	return nil
 }
 
+// Allow если бакет не создан, то создает его и вызывает TokenBucket.Allow
 func (rl *RateLimiter) Allow(clientID string) bool {
 	rl.mu.RLock()
 	bucket, bucketExists := rl.buckets[clientID]
