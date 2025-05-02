@@ -21,11 +21,6 @@ import (
 func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
-			clientIP := req.RemoteAddr
-			if !lb.rateLimiter.Allow(clientIP) {
-				req.URL.Host = "rate-limited"
-				return
-			}
 			backend := lb.NextBackend()
 			if backend == nil {
 				req.URL.Host = ""
@@ -33,6 +28,13 @@ func NewReverseProxy(lb *LoadBalancer) *httputil.ReverseProxy {
 			}
 			req.URL.Scheme = backend.Url.Scheme
 			req.URL.Host = backend.Url.Host
+
+			clientId := req.URL.Host
+			log.Print("clientId: ", clientId)
+			if !lb.rateLimiter.Allow(clientId) {
+				req.URL.Host = "rate-limited"
+				return
+			}
 			log.Printf("Forwarding request to %v", backend.Url)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

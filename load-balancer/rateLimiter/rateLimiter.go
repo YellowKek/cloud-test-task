@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/spf13/viper"
 	"log"
+	"net/url"
 	"sync"
 	"time"
 )
@@ -48,15 +49,17 @@ func (tb *TokenBucket) Allow() bool {
 	return false
 }
 
+//func tb.
+
 type TokenBucketConfig struct {
-	ClientID       string
 	Capacity       int
 	RefillInterval time.Duration
 }
 
 type RateLimiter struct {
+	config map[string]*TokenBucketConfig
+	//config  TokenBucketConfig
 	buckets map[string]*TokenBucket
-	config  TokenBucketConfig
 	mu      sync.RWMutex
 	db      *sql.DB
 }
@@ -68,15 +71,19 @@ func NewRateLimiter(db *sql.DB) *RateLimiter {
 	}
 
 	// Загружаем настройки клиентов из БД при старте, если нет данных в бд то загружаем из дефолтного конфига
-	if err := rl.loadClientConfig(); err != nil {
-		err := rl.loadDefaultConfig()
-		log.Print("loading default config")
-		if err != nil {
-			log.Fatal("load bucket config failed", err)
-			return nil
-		}
+	//if err := rl.loadClientConfig(); err != nil {
+	//	err := rl.loadDefaultConfig()
+	//	log.Print("loading default config")
+	//	if err != nil {
+	//		log.Fatal("load bucket config failed", err)
+	//		return nil
+	//	}
+	//}
+	err := rl.loadDefaultConfig()
+	if err != nil {
+		return nil
 	}
-	log.Printf("clientId: %s, capacity: %d, refill int: %d", rl.config.ClientID, rl.config.Capacity, rl.config.RefillInterval)
+	//log.Printf("clientId: %s, capacity: %d, refill int: %d", rl.config.ClientID, rl.config.Capacity, rl.config.RefillInterval)
 	return rl
 }
 
@@ -87,51 +94,70 @@ func (rl *RateLimiter) loadDefaultConfig() error {
 	if err := viper.ReadInConfig(); err != nil {
 		return err
 	}
-	var cfg = TokenBucketConfig{}
+	cfgMap := make(map[string]*TokenBucketConfig)
+	var cfg TokenBucketConfig
 	cfg.Capacity = viper.GetInt("rate_limiting.capacity")
 	cfg.RefillInterval = viper.GetDuration("rate_limiting.refill_interval")
-	rl.config = cfg
-	return nil
-}
 
-func (rl *RateLimiter) loadClientConfig() error {
-	rows, err := rl.db.Query("SELECT client_id, capacity, refill_interval FROM client_configs")
-	if err != nil {
-		log.Printf("Failed to load client configs: %v", err)
-		return err
-	}
-	defer rows.Close()
-
-	loaded := false
-	for rows.Next() {
-		loaded = true
-		var cfg TokenBucketConfig
-		var interval int
-		err := rows.Scan(&cfg.ClientID, &cfg.Capacity, &interval)
+	temp := viper.GetStringSlice("backends")
+	for _, clientId := range temp {
+		clientURL, err := url.Parse(clientId)
 		if err != nil {
-			log.Printf("Failed to scan client config: %v", err)
-			continue
+			return fmt.Errorf("parse client id failed: %v", err)
 		}
-		cfg.RefillInterval = time.Duration(interval) * time.Second
-
-		rl.config = cfg
-		rl.buckets[cfg.ClientID] = NewTokenBucket(cfg.Capacity, cfg.RefillInterval)
+		cfgMap[clientURL.Host] = &TokenBucketConfig{
+			Capacity:       cfg.Capacity,
+			RefillInterval: cfg.RefillInterval}
 	}
-
-	if !loaded {
-		return fmt.Errorf("no client configurations found in database")
+	rl.config = cfgMap
+	for k, v := range cfgMap {
+		log.Printf("cfg map for %s: cap: %d refill int: %d", k, v.Capacity, v.RefillInterval)
 	}
 	return nil
 }
+
+//func (rl *RateLimiter) loadClientConfig() error {
+//	rows, err := rl.db.Query("SELECT client_id, capacity, refill_interval FROM client_configs")
+//	if err != nil {
+//		log.Printf("Failed to load client configs: %v", err)
+//		return err
+//	}
+//	defer rows.Close()
+//
+//	loaded := false
+//	for rows.Next() {
+//		loaded = true
+//		var cfg TokenBucketConfig
+//		var interval int
+//		err := rows.Scan(&cfg.ClientID, &cfg.Capacity, &interval)
+//		if err != nil {
+//			log.Printf("Failed to scan client config: %v", err)
+//			continue
+//		}
+//		cfg.RefillInterval = time.Duration(interval) * time.Second
+//
+//		rl.config = cfg
+//		rl.buckets[cfg.ClientID] = NewTokenBucket(cfg.Capacity, cfg.RefillInterval)
+//	}
+//
+//	if !loaded {
+//		return fmt.Errorf("no client configurations found in database")
+//	}
+//	return nil
+//}
 
 func (rl *RateLimiter) Allow(clientID string) bool {
 	rl.mu.RLock()
-	bucket, exists := rl.buckets[clientID]
+	bucket, bucketExists := rl.buckets[clientID]
+	cfg, configExists := rl.config[clientID]
 	rl.mu.RUnlock()
 
-	if !exists {
+	if !bucketExists {
+		if !configExists {
+			log.Fatalf("config for client %s not exists", clientID)
+		}
 		rl.mu.Lock()
-		bucket = NewTokenBucket(rl.config.Capacity, rl.config.RefillInterval)
+		bucket = NewTokenBucket(cfg.Capacity, cfg.RefillInterval)
 		rl.buckets[clientID] = bucket
 		rl.mu.Unlock()
 	}
